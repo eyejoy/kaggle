@@ -1,0 +1,469 @@
+---
+title: "kaggle 인사 데이터를 통한 퇴사 예측 모델링"
+author: "Sung"
+date: "2017-12-16"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+mainfont: NanumGothic
+fontsize: 12pt
+lang: Korean
+---
+```{r include=F}
+# global option
+knitr::opts_chunk$set(
+  comment = "##>",
+  collapse = T,
+  eval = T,
+  tidy = F,
+  message = F,
+  warning = F,
+  fig.width = 4,
+  fig.height = 4
+)
+
+# global option
+options("scipen" = 100, digits = 3)
+```
+---  
+
+## 데이터 소개
+
+- 직원들이 퇴사 여부에 대한 대한 시뮬레이션 데이터
+- 데이터 column 정보
+    
+     column 명           |  의미                       | 타입 정보 
+   :--------------------:|:---------------------------:|:------------------:
+   satisfaction_level    | 만족도                      | numeric(0~1)
+   last_evaluation       | 마지막 평가                 | numeric(0~1)
+   number_project        | 완료한 프로젝트 수          | integer(1~10)
+   average_montly_hours  | 월평균 근무 시간            | numeric
+   time_spend_company    | 근속 년수                   | integer(1~10)
+   Work_accident         | 업무상 과실 여부            | factor(0, 1)
+   left                  | 퇴사 여부                   | factor(0, 1)
+   promotion_last_5years | 최근 5년 내 승진 여부       | factor(0, 1)
+   sales                 | 부서                        | string
+   salary                | 연봉수준                    | string
+
+    - 출처: https://www.kaggle.com/ludobenistant/hr-analytics
+
+
+## 데이터 불러오기
+
+- 각 변수의 타입에 맞게 데이터 불러오기
+
+    ```{r}
+    # load package
+    library(tidyverse)
+    
+    # column type: c = character, i = integer, n = number, d = double, l =logical, D = date, T = date time, t = time, ? = guess, or _/- to skip the column.
+    hra_raw <- read_csv("../data/HR_comma_sep.csv",
+                       col_types = cols(.default = "d",
+                                        number_project = "i",
+                                        time_spend_company = "i", 
+                                        Work_accident = col_factor(c(0, 1)), 
+                                        left = col_factor(c(0, 1)), 
+                                        promotion_last_5years = col_factor(c(0, 1)),
+                                        sales = "c", salary = "c"))
+    
+    glimpse(hra_raw)
+    ```
+
+
+## 탐색적 자료 분석(EDA)
+
+- 변수별 데이터 확인
+
+    - 전체 건수는 `r dim(hra_raw)[1]`건임
+    - 모든 변수에는 `NA` 값은 존재하지 않음
+    
+    ```{r results = "asis"}
+    # load packages
+    library(knitr)
+    library(kableExtra)
+    
+    # na 건수 체크 및 출력
+    hra_raw %>% 
+        summarise_all(funs(sum(is.na(.)))) %>% 
+        gather(var_name, na_cnt) %>% 
+        kable(format = "html") %>% 
+        kable_styling(bootstrap_options = "striped", full_width = F, position = "left")
+    
+    # ktable 참고: https://cran.r-project.org/web/packages/kableExtra/vignettes/awesome_table_in_html.html
+    ```
+
+
+- 변수별 상관 분석
+
+    - 완료 프로젝트수와 월평균 근무시간과 마지막평가가 약한 양의 상관관계가 있음
+
+    ```{r fig.width = 6, fig.height = 6}
+    # 상관 분석
+    library(corrplot)
+    hra_raw %>%
+        select_if(is.numeric) %>% 
+        cor() %>% 
+        corrplot.mixed(lower="ellipse", upper="number", tl.pos = c("lt"), diag = c("l"))
+    ```
+
+
+- 변수별 통계 및 시각화
+
+    - 퇴사 여부 : 퇴사자 비율은 `r (hra_raw %>% filter(left == 1) %>% count() / hra_raw %>% count()) * 100`%로 불균형 자료임
+    
+    ```{r}
+    # load package
+    library(scales)
+    
+    # 퇴사자 수 및 비율
+    hra_raw %>%
+        group_by(left) %>% 
+        summarise(left_cnt = n()) %>% 
+        mutate(left_rate = left_cnt / sum(left_cnt) * 100) %>% 
+        ggplot(aes(x = reorder(left, -left_cnt), y = left_cnt)) +
+        geom_bar(stat = "identity", color = "black", fill="gold") +
+        geom_text(aes(label = paste0("(", round(left_rate, 1), "%)")), size = 3.5, vjust = -0.5, color = 'navyblue', fontface = 'italic') +
+        scale_y_continuous(labels = comma, limits = c(0, 15000)) +
+        labs(x = "Left or not", y = "The count of Left", title = "The count of Left")
+    ```
+    
+    - 마지막 평가
+    
+    ```{r fig.width = 8}
+    # grid package load
+    library(gridExtra)
+    
+    # 마지막 평가 분포
+    eval_plot <- hra_raw %>%
+        ggplot(aes(last_evaluation)) +
+        geom_histogram(bins = 30, color = "black", fill="skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 1000)) +
+        labs(x = "Last evaluation", y = "count", title = "Historam of last evaluation")
+    
+    # 마지막 평가 * 퇴사여부
+    eval_left_plot <- hra_raw %>%
+        ggplot(aes(x = left, y = last_evaluation)) +
+        geom_boxplot(fill = "skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 1)) +
+        labs(x = "Left or not", y = "Last evaluation", title = "Last evaluation by Left")
+    
+    grid.arrange(eval_plot, eval_left_plot, ncol = 2)
+    ```
+    
+    
+    - 만족도
+    
+    ```{r fig.width = 8}
+    # grid package load
+    library(gridExtra)
+    
+    # 만족도 분포
+    satis_plot <- hra_raw %>%
+        ggplot(aes(satisfaction_level)) +
+        geom_histogram(bins = 30, color = "black", fill="skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 1000)) +
+        labs(x = "satisfaction level", y = "count", title = "Historam of satisfaction level")
+    
+    # 만족도 * 퇴사여부
+    satis_left_plot <- hra_raw %>%
+        ggplot(aes(x = left, y = satisfaction_level)) +
+        geom_boxplot(fill = "skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 1)) +
+        labs(x = "Left or not", y = "Level of satisfaction", title = "Level of satisfaction by Left")
+
+    grid.arrange(satis_plot, satis_left_plot, ncol = 2)
+    ```
+    
+    
+    - 월평균 근무시간
+    
+    ```{r fig.width = 8}
+    # grid package load
+    library(gridExtra)
+    
+    # 월평균 근무 시간 분
+    avg_working_hours_plot <- hra_raw %>%
+        ggplot(aes(average_montly_hours)) +
+        geom_histogram(bins = 30, color = "black", fill="skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 1000)) +
+        labs(x = "Average monthly working hours", y = "count", title = "Historam of average monthly working hours")
+    
+    # 월평균 근무시간 * 퇴사여부
+    avg_working_hours_left_plot <- hra_raw %>%
+        ggplot(aes(x = left, y = average_montly_hours)) +
+        geom_boxplot(fill = "skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 400)) +
+        labs(x = "Left or not", y = "Average monthly hours at workplace", title = "Average monthly hours at workplace by Left")
+
+    grid.arrange(avg_working_hours_plot, avg_working_hours_left_plot, ncol = 2)
+    ```
+    
+    
+    - 완료한 프로젝트수
+    
+    ```{r fig.width = 8}
+    # grid package load
+    library(gridExtra)
+    
+    # 완료한 프로젝트 수
+    num_project_plot <- hra_raw %>%
+        group_by(number_project) %>% 
+        summarise(cnt = n()) %>% 
+        mutate(number_project_rate = cnt / sum(cnt) * 100) %>% 
+        ggplot(aes(x = number_project, y = cnt)) +
+        geom_bar(stat = "identity", color = "black", fill="skyblue") +
+        geom_text(aes(label = paste0("(",round(number_project_rate, 1), "%)")), size = 3.5, vjust = -0.5, color = 'navyblue', fontface = 'italic') +
+        scale_y_continuous(labels = comma, limits = c(0, 5000)) +
+        labs(x = "Number of projects completed", y = "count", title = "Distribution of Number of projects completed")
+    
+    # 완료된 프로젝트 수 * 퇴사여부
+    num_project_left_plot <- hra_raw %>%
+        group_by(left, number_project) %>% 
+        summarise(left_cnt = n()) %>% 
+        ggplot(aes(x = number_project, y = left_cnt)) +
+        geom_bar(stat = "identity", colour = "black", aes(fill = left), position="dodge") +
+        scale_y_continuous(labels = comma, limits = c(0, 5000)) +
+        labs(x = "Number of projects completed", y = "Number of projects completed", title = "Number of projects completed by Left")
+
+    grid.arrange(num_project_plot, num_project_left_plot, ncol = 2)
+    ```
+    
+    
+    - 근속 년수
+    
+    ```{r fig.width = 8}
+    # 근속 년수 분포
+    ts_company_plot <- hra_raw %>%
+        group_by(time_spend_company) %>% 
+        summarise(cnt = n()) %>% 
+        mutate(time_spend_company_rate = cnt / sum(cnt) * 100) %>% 
+        ggplot(aes(x = time_spend_company, y = cnt)) +
+        geom_bar(stat = "identity", color = "black", fill="skyblue") +
+        geom_text(aes(label = paste0("(",round(time_spend_company_rate, 1), "%)")), size = 3.5, vjust = -0.5, color = 'navyblue', fontface = 'italic') +
+        scale_y_continuous(labels = comma, limits = c(0, 8000)) +
+        labs(x = "Number of years spent in the company", y = "count", title = "Historam of Number of years spent in the company")
+    
+    # 근속 년수 * 퇴사여부
+    ts_company_left_plot <- hra_raw %>%
+        group_by(left, time_spend_company) %>% 
+        summarise(left_cnt = n()) %>% 
+        ggplot(aes(x = time_spend_company, y = left_cnt)) +
+        geom_bar(stat = "identity", colour = "black", aes(fill = left), position="dodge") +
+        scale_y_continuous(labels = comma, limits = c(0, 8000)) +
+        labs(x = "Left or not", y = "Number of years spent in the company", title = "Number of years spent in the company by Left")
+
+    grid.arrange(ts_company_plot, ts_company_left_plot, ncol = 2)
+    ```
+    
+    
+    - 업무상 과실여부, 최근 5년내 승진여부
+    
+    ```{r fig.width = 8}
+    # 업무상 과실 여부 * 퇴사여부
+    work_accident_left_plot <- hra_raw %>%
+        group_by(left, Work_accident) %>% 
+        summarise(left_cnt = n()) %>% 
+        ggplot(aes(x = Work_accident, y = left_cnt)) +
+        geom_bar(stat = "identity", colour = "black", aes(fill = left), position="dodge") +
+        scale_y_continuous(labels = comma, limits = c(0, 20000)) +
+        labs(x = "Left or not", y = "The count of workplace accident", title = "The count of workplace accident by Left")
+    
+        
+    # 최근 5년 내 승진 여부 * 퇴사여부
+    promotion_5y_left_plot <- hra_raw %>%
+        group_by(left, promotion_last_5years) %>% 
+        summarise(left_cnt = n()) %>% 
+        ggplot(aes(x = promotion_last_5years, y = left_cnt)) +
+        geom_bar(stat = "identity", colour = "black", aes(fill = left), position="dodge") +
+        scale_y_continuous(labels = comma, limits = c(0, 20000)) +
+        labs(x = "Promotion in the last five years or not", y = "The count of promotion in the last five years", title = "The count of promotion in the last five years by Left")
+
+    grid.arrange(work_accident_left_plot, promotion_5y_left_plot, ncol = 2)
+    ```
+    
+    
+    - 부서, 연봉수준
+    
+    ```{r fig.width = 8}
+    # 부서 * 퇴사여부
+    department_left_plot <- hra_raw %>%
+        group_by(left, sales) %>% 
+        summarise(left_cnt = n()) %>% 
+        ggplot(aes(x = sales, y = left_cnt)) +
+        geom_bar(stat = "identity", colour = "black", aes(fill = left), position="dodge") +
+        scale_y_continuous(labels = comma, limits = c(0, 5000)) +
+        labs(x = "Working Department", y = "The count of Working Department", title = "Working Department by left")
+    
+        
+    # 연봉 수준 * 퇴사여부
+    salary_left_plot <- hra_raw %>%
+        group_by(left, salary) %>% 
+        summarise(left_cnt = n()) %>% 
+        ggplot(aes(x = salary, y = left_cnt)) +
+        geom_bar(stat = "identity", colour = "black", aes(fill = left), position="dodge") +
+        scale_y_continuous(labels = comma, limits = c(0, 10000)) +
+        labs(x = "Left or not", y = "The level of salary", title = "The level of salary by left")
+
+    grid.arrange(department_left_plot, salary_left_plot, ncol = 2)
+    ```
+    
+    
+    - 퇴사자 중 만족도 * 마지막 평가 * 월평균 근무 시간
+    
+    ```{r fig.width = 6}
+    # 퇴사자 중 만족도 * 마지막 평가 
+    left_satis_eval_plot <- hra_raw %>%
+        filter(left == 1) %>% 
+        ggplot(aes(x = satisfaction_level, y = last_evaluation)) +
+        geom_point(color = "hotpink")
+    
+    # 퇴사자 중 월평균 근무 시간 * 마지막 평가
+    left_avg_working_hours_eval_plot <- hra_raw %>%
+        filter(left == 1) %>% 
+        ggplot(aes(x = average_montly_hours, y = last_evaluation)) +
+        geom_point(color = "hotpink")
+    
+    # 퇴사자 중 월평균 근무 시간 * 만족도
+    left_avg_working_hours_satis_plot <- hra_raw %>%
+        filter(left == 1) %>% 
+        ggplot(aes(x = average_montly_hours, y = satisfaction_level)) +
+        geom_point(color = "hotpink")
+
+    grid.arrange(left_satis_eval_plot, left_avg_working_hours_eval_plot, left_avg_working_hours_satis_plot, ncol = 2)
+    ```
+    
+    
+    - 퇴사자 클러스터링
+    
+        - 사용 변수: 만족도, 마지막 평가, 월평균 근무시간
+        - 군집 개수: 4개 (1. sum of square 사용, 2. NBClust 사용) 
+
+    ``` {r fig.width = 6}
+    # 데이터 표준화
+    hra_left <- hra_raw %>%
+        filter(left == 1) %>% 
+        select(satisfaction_level, last_evaluation, average_montly_hours) %>% 
+        mutate(satisfaction_level_std = scale(satisfaction_level),
+               last_evaluation_std = scale(last_evaluation), 
+               average_montly_hours_std = scale(average_montly_hours))
+    
+    # 클러스터링 용 데이터만 추출
+    hra_left_cl_dat <- hra_left %>% 
+        select(ends_with("_std"))
+    
+    ## kmeans 알고리즘
+    
+    # 적절한 군집 개수 정하기 ( 1. sum of square 사용, 2. NBClust 사용)
+    # 군집 내 sum of square 사용
+    wss <- (nrow(hra_left_cl_dat)-1)*sum(apply(hra_left_cl_dat, 2, var))
+    for(i in 2:15){
+        set.seed(1)
+        wss[i] <- sum(kmeans(hra_left_cl_dat, centers=i)$withinss)
+    }
+    
+    wss_df <- data.frame(x = 1:15, wss)
+    
+    wss_plot <- wss_df %>% 
+        ggplot(aes(x = 1:15, y = wss)) +
+        geom_point(color = "hotpink") +
+        geom_line(color = "hotpink") +
+        labs(x = "Number of Clusters", y = "Within groups sum of squares")
+    
+    # NbClust 사용
+    library(NbClust)
+    
+    # 수행 시간이 오래 걸림, 결과가 있으면 불러오기 
+    file_nc <- "model/nc_seed_1.rds"
+    if(file.exists(file_nc)){
+        nc <- readRDS(file_nc)
+    } else {
+        nc <- NbClust(hra_left_cl_dat, min.nc=2, max.nc=15, method="kmeans")
+        saveRDS(nc, file="model/nc_seed_1.rds")
+    }
+    
+    # 군집 수 그래프 작성
+    best_nc <- nc$Best.nc[1,]
+    nbcluster_plot <- data.frame(name = names(best_nc), best_nc) %>%
+        as_tibble() %>% 
+        group_by(best_nc) %>% 
+        summarise(cnt = n()) %>% 
+        ggplot(aes(x = factor(best_nc), y = cnt)) +
+        geom_bar(stat = "identity", colour = "black") +
+        scale_y_continuous(labels = comma, limits = c(0, 20)) +
+        labs(x = "Number of Clusters", y = "Number of Criteria", title = "Number of Clusters Chosen")
+
+    grid.arrange(wss_plot, nbcluster_plot, ncol = 2)
+    ```
+    
+    - 퇴사자 클러스터링: 클러스터 해석
+    
+        - 클러스터 1: 만족도는 약간 낮고 평가가 낮고 월평균 근무시간이 적은 그룹 >> 적당히 일하는 사원 
+        
+        - 클러스터 2: 만족도가 매우 낮고 평가가 높고 월평균 근무시간이 많은 그룹 >> 불만 많은 우수 사원
+        
+        - 클러스터 3: 만족도는 약간 낮고 평가가 낮고 월평균 근무시간이 많은 그룹 >> 근무 대비 성과가 안나오는 사원
+        
+        - 클러스터 4: 만족도가 매우 높고 평가가 높고 월평균 근무시간이 많은 그룹 >> 우수 사원
+        
+    ```{r results = "asis"}
+    # 클러스터링 실행
+    set.seed(1)
+    hra_left_cluster <- kmeans(hra_left_cl_dat, 4)
+    
+    # kmeans 클러스터링 결과 추가
+    hra_left_with_cluster <- hra_left %>% 
+        mutate(cluster = hra_left_cluster$cluster)
+    
+    # kmeans 결과 확인
+    hra_left_with_cluster %>% 
+        group_by(cluster) %>% 
+        summarise(cnt = n(), 
+                  satisfaction_level_m = mean(satisfaction_level), 
+                  last_evaluation_m = mean(last_evaluation), 
+                  average_montly_hours_m = mean(average_montly_hours)) %>% 
+        slice(1:4) %>% 
+        kable(format = "html", caption = "K-means clustering 결과 표") %>% 
+        kable_styling(bootstrap_options = "striped", full_width = F, position = "left")
+    ```
+    
+    ```{r fig.width = 8, fig.height = 8}
+    # 군집별 만족도
+    cluster_plot_satisfaction_level <- hra_left_with_cluster %>%
+        ggplot(aes(x = factor(cluster), y = satisfaction_level)) +
+        geom_boxplot(fill = "skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 1)) +
+        labs(x = "The cluster number", y = "Satisfaction level", title = "Satisfaction level by the cluster number")
+    
+    # 군집별 마지막 평가
+    cluster_plot_last_evaluation <- hra_left_with_cluster %>%
+        ggplot(aes(x = factor(cluster), y = last_evaluation)) +
+        geom_boxplot(fill = "skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 1)) +
+        labs(x = "The cluster number", y = "Last evaluation", title = "Last evaluation by the cluster number")
+    
+    # 군집별 평균 근무시간
+    cluster_plot_average_montly_hours <- hra_left_with_cluster %>%
+        ggplot(aes(x = factor(cluster), y = average_montly_hours)) +
+        geom_boxplot(fill = "skyblue") +
+        scale_y_continuous(labels = comma, limits = c(0, 400)) +
+        labs(x = "The cluster number", y = "Average monthly hours at workplace", title = "Average monthly hours at workplace by the cluster number")
+    
+    grid.arrange(cluster_plot_satisfaction_level, 
+                 cluster_plot_last_evaluation,
+                 cluster_plot_average_montly_hours, ncol = 1)
+    ```
+    
+    ```{r include = F}
+    # 군집 시각화
+    library(car)
+    # scatter3d(satisfaction_level ~ last_evaluation + average_montly_hours|factor(cl_kmeans),
+    #           data = hra_left_with_cluster,
+    #           surface = F, ellipsoid = T)
+    ```
+    
+
+## 퇴사자 모델링
+
+- 작성 중
